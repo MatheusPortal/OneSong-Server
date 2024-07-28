@@ -1,4 +1,3 @@
-import time
 from flask import Flask, request, jsonify
 import yt_dlp
 from difflib import SequenceMatcher
@@ -13,13 +12,20 @@ import os
 from youtube_dl import YoutubeDL
 import json
 import re
-import time
 import speech_recognition as sr
 
 from cryptography.fernet import Fernet
 import os
 import unicodedata
 from flask_cors import CORS
+import emoji
+
+import requests
+from bs4 import BeautifulSoup
+from concurrent.futures import ThreadPoolExecutor
+from flask import Flask, request, jsonify
+from pydub import AudioSegment
+
 
 
 
@@ -30,6 +36,8 @@ app.static_folder = 'static'
 
 
 DB_FILE = "static/song_cache.db"
+
+palavras_para_remover = ['oficial', 'live', 'ao vivo', 'clipe', 'hd', 'audio' 'stevie', 'wonder', 'songs', 'mix', 'mixtape', 'mixes', 'lyric', 'video', 'official', 'music', 'dvd', 'cd', '4k', 'lyrics', 'balvin', 'jbalvin', 'audío']
 
 
 def init_db():
@@ -44,7 +52,9 @@ def init_db():
                 imagem TEXT,
                 tempo INTEGER,
                 view INTEGER DEFAULT 0,
-                like INTEGER DEFAULT 0
+                like INTEGER DEFAULT 0,
+                genero TEXT,
+                letra TEXT
             )
         ''')
         conn.commit()
@@ -54,33 +64,31 @@ def init_db():
 
 
 def remover_caracteres_especiais(s, op=0):
+    def remove_emoji(text):
+        return emoji.replace_emoji(text, replace='')
+        
     tex = ''
-    text_re = f'{s}'.replace('-', '').split()
+    
+    s = remove_emoji(s)
+
+    # Remove acentos
+    s = ''.join(c for c in unicodedata.normalize('NFD', s) if unicodedata.category(c) != 'Mn')
+
+    # Remove caracteres especiais e converte para minúsculas
+    s = re.sub(r'[^\w\s]', '', s).lower()
+
 
     # guarda no banco
     if op != 0:
-        new_s = re.sub(r'\[[^\]]*\]', '', s)
-        new_s = ''.join(c for c in unicodedata.normalize('NFD', s)
-                        if unicodedata.category(c) != 'Mn')
-        new_s = re.sub(r'[^\w\s]', '', new_s.upper())
-        new_s = re.sub(r'[^\w\s()]', '', new_s.upper())
+        # Remove palavras indesejadas
+        for palavra in palavras_para_remover:
+            s = s.replace(palavra, '')
 
-        new_s = new_s.split()
-
-        for i, p in enumerate(new_s):
-            if p.replace(
-                    ' ', ''
-            ) not in 'LYRICSMUSICAOFICIALOFFICIALLETRALIVERADIOVIDEOAOVIVOCLIPEAUDIO' and '()' not in text_re[
-                    i]:
-                tex += f'{text_re[i]} '.capitalize()
+        # Divide o texto em palavras e capitaliza cada palavra
+        tex = ' '.join([palavra.capitalize() for palavra in s.split()])
 
     # comparar musica
     else:
-        # Remove acentos
-        s = ''.join(c for c in unicodedata.normalize('NFD', s)
-                    if unicodedata.category(c) != 'Mn')
-        s = re.sub(r'[^\w\s]', '', s.lower())
-
         # Define a expressão regular para encontrar caracteres especiais
         padrao = r'[^a-zA-Z0-9\s]'
 
@@ -105,7 +113,9 @@ def buscar_musicas(song_query):
                 imagem TEXT,
                 tempo INTEGER,
                 view INTEGER DEFAULT 0,
-                like INTEGER DEFAULT 0
+                like INTEGER DEFAULT 0,
+                genero TEXT,
+                letra TEXT
             )
         ''')
         conn.commit()
@@ -133,7 +143,9 @@ def buscar_musicas(song_query):
                     'imagem': dados[3],
                     'tempo': dados[4],
                     'views': dados[5],
-                    'like': dados[6]
+                    'like': dados[6],
+                    'genero': dados[7],
+                    'letra': dados[8]
                 }
                 results_banco.append(tabela)
 
@@ -144,15 +156,15 @@ def buscar_musicas(song_query):
             'quiet': True,
             'skip_download': True,
             'age_limit': 18,
-            'format': 'bestvideo[ext!=mhtml]',
+            'format': 'best',
+            'noplaylist': True,
             'extractor_args': {
-                'ytsearch5': {
-                    'download': False,
-                    'noplaylist': True,
-                    'live': False
+                'youtube': {
+                    'skip': ['dash'],
                 }
             }
         }
+
 
         with yt_dlp.YoutubeDL(ydl_opts_info) as ydl:
             try:
@@ -173,8 +185,8 @@ def buscar_musicas(song_query):
 
         # Inserir os detalhes das músicas na tabela
         for detail in song_details:
-            c.execute("INSERT OR IGNORE INTO songs (id, nome, url, imagem, tempo) VALUES (?, ?, ?, ?, ?)", 
-                      (detail['id'], detail['nome'], detail['url'], detail['imagem'], detail['tempo']))
+            c.execute("INSERT OR IGNORE INTO songs (id, nome, url, imagem, tempo, genero, letra) VALUES (?, ?, ?, ?, ?, ?, ?)", 
+                      (detail['id'], detail['nome'], detail['url'], detail['imagem'], detail['tempo'], detail['genero'], detail['letra']))
 
         # Confirmar a transação e fechar a conexão com o banco de dados
         conn.commit()
@@ -198,51 +210,152 @@ def extrair_id_do_video(url):
 
 
 def identificar_genero(titulo):
-    # Dicionário de padrões para identificar gêneros
+    # Dicionário de palavras-chave associadas a diferentes gêneros
     generos = {
-        'pop': ['pop', 'músicas pop'],
-        'rock': ['rock', 'rock and roll'],
-        'mpb': ['mpb', 'música popular brasileira'],
-        'trap': ['trap'],
-        'funk': ['funk'],
-        'eletronica': ['eletrônica', 'edm', 'música eletrônica'],
-        'sertanejo': ['sertanejo'],
-        'latina': ['latina', 'músicas latinas'],
-        'para você': ['para você', 'for you'],
-        'jogos': ['jogos', 'trilha sonora de jogos'],
-        'classica': ['clássica', 'música clássica'],
-        'filmes': ['filmes', 'trilha sonora de filmes'],
-        'pagode': ['pagode'],
+        'rock': [
+            'rock', 'metal', 'hard rock', 'grunge', 'punk', 'alternative', 'Nirvana', 'Metallica', 'Led Zeppelin', 'AC/DC', 'Guns N\' Roses', 
+            'Queen', 'Pink Floyd', 'The Rolling Stones', 'U2', 'The Beatles', 'Aerosmith', 'The Who', 'Foo Fighters', 'Red Hot Chili Peppers', 
+            'Green Day', 'Pearl Jam', 'Alice in Chains', 'Soundgarden', 'Linkin Park', 'Iron Maiden', 'Black Sabbath', 'Deep Purple', 'KISS', 
+            'Bon Jovi', 'Def Leppard', 'Scorpions', 'Van Halen', 'Motörhead', 'Rammstein', 'System of a Down', 'Slipknot', 'Megadeth', 
+            'Judas Priest', 'Anthrax', 'Pantera', 'Slayer', 'Rage Against the Machine', 'Muse', 'Radiohead', 'Arctic Monkeys', 'The Strokes', 
+            'Oasis', 'Blur', 'The Smashing Pumpkins', 'Lynyrd Skynyrd', 'ZZ Top', 'Dire Straits', 'Rush', 'Yes', 'Genesis', 'Emerson, Lake & Palmer', 
+            'King Crimson', 'Jethro Tull', 'Tool', 'Dream Theater', 'Faith No More', 'Nine Inch Nails', 'Marilyn Manson', 'Deftones'
+        ],
+        'pop': [
+            'pop', 'dance', 'electronic', 'top 40', 'chart', 'hits', 'Michael Jackson', 'Madonna', 'Britney Spears', 'Lady Gaga', 'Taylor Swift', 
+            'Ariana Grande', 'Justin Bieber', 'Rihanna', 'Beyoncé', 'Katy Perry', 'Bruno Mars', 'Selena Gomez', 'The Weeknd', 'Dua Lipa', 
+            'Shawn Mendes', 'Ed Sheeran', 'Billie Eilish', 'Harry Styles', 'Camila Cabello', 'Demi Lovato', 'Christina Aguilera', 'Jennifer Lopez', 
+            'Kesha', 'Charlie Puth', 'Sam Smith', 'Maroon 5', 'Justin Timberlake', 'Backstreet Boys', 'NSYNC', 'Jonas Brothers', 'Carly Rae Jepsen', 
+            'Ellie Goulding', 'Halsey', 'Lana Del Rey', 'Miley Cyrus', 'Nicki Minaj', 'Cardi B', 'Lil Nas X', 'Jason Derulo', 'Pitbull', 'Shakira', 
+            'Tove Lo', 'Adele', 'Lorde', 'Khalid', 'Sia', 'BTS', 'BLACKPINK', 'One Direction', 'Little Mix', 'Fifth Harmony', 'Mabel', 'Anne-Marie'
+        ],
+        'mpb': [
+            'mpb', 'bossa nova', 'samba', 'tropicalia', 'samba-rock', 'Tom Jobim', 'Caetano Veloso', 'Gilberto Gil', 'Chico Buarque', 'Gal Costa', 
+            'Elis Regina', 'Maria Bethânia', 'João Gilberto', 'Zé Ramalho', 'Alceu Valença', 'Milton Nascimento', 'Djavan', 'Marisa Monte', 
+            'Adoniran Barbosa', 'Martinho da Vila', 'Nara Leão', 'Vinícius de Moraes', 'Toquinho', 'Jorge Ben Jor', 'Gonzaguinha', 'Beth Carvalho', 
+            'Clara Nunes', 'Dorival Caymmi', 'Noel Rosa', 'Paulinho da Viola', 'Cartola', 'Nelson Cavaquinho', 'Paulinho Moska', 'Lenine', 
+            'Zeca Baleiro', 'Elza Soares', 'Lô Borges', 'Baden Powell', 'Yamandu Costa', 'Hamilton de Holanda', 'Egberto Gismonti', 'Naná Vasconcelos'
+        ],
+        'trap': [
+            'trap', 'hip hop', 'rap', 'urban', 'drill', 'gangsta', 'Eminem', 'Jay-Z', 'Kanye West', 'Dr. Dre', 'Kendrick Lamar', '2Pac', 'Notorious B.I.G.', 
+            'Nas', 'Snoop Dogg', 'Lil Wayne', 'Drake', 'Travis Scott', 'Migos', 'Future', 'Cardi B', 'Nicki Minaj', 'Post Malone', 'Juice WRLD', '21 Savage', 
+            'Lil Uzi Vert', 'XXXTentacion', 'J. Cole', 'Meek Mill', 'Tyga', 'Rick Ross', 'Gucci Mane', 'A$AP Rocky', 'A$AP Ferg', 'Playboi Carti', 
+            'Trippie Redd', 'Lil Pump', 'Lil Yachty', 'Young Thug', 'Gunna', 'DaBaby', 'Roddy Ricch', 'Pop Smoke', 'NLE Choppa', 'Lil Tjay', 
+            'Polo G', 'Blueface', 'Lil Skies', 'BlocBoy JB', 'Juicy J', 'Three 6 Mafia', 'T.I.', 'Ludacris', 'Wiz Khalifa', 'Mac Miller', 'Machine Gun Kelly'
+        ],
+        'funk': [
+            'funk', 'brazilian funk', 'funk carioca', 'favela funk', 'MC Kevinho', 'Anitta', 'MC Livinho', 'MC Kevin O Chris', 'MC Kekel', 'Ludmilla', 
+            'MC Guimê', 'MC Bin Laden', 'MC João', 'MC Loma e As Gêmeas Lacração', 'MC Fioti', 'Nego do Borel', 'MC Carol', 'Valesca Popozuda', 
+            'MC G15', 'MC Lan', 'MC Mirella', 'MC Pikachu', 'MC Pedrinho', 'MC Davi', 'MC Don Juan', 'MC Brinquedo', 'MC Hariel', 'MC WM', 
+            'MC Jottapê', 'MC Zaac', 'MC Marks', 'MC Cabelinho', 'MC Cacau', 'Tati Quebra Barraco', 'Mr. Catra', 'DJ Marlboro', 'DJ Rennan da Penha', 
+            'DJ Polyvox', 'Bonde do Tigrão', 'Cidinho & Doca', 'MC Sapão', 'MC Marcinho', 'MC Koringa', 'MC Leozinho', 'MC Créu', 'MC Diguinho'
+        ],
+        'eletronica': [
+            'eletrônica', 'edm', 'techno', 'house', 'trance', 'dubstep', 'David Guetta', 'Calvin Harris', 'Avicii', 'Tiesto', 'Skrillex', 'Martin Garrix', 
+            'Deadmau5', 'Armin van Buuren', 'Swedish House Mafia', 'Steve Aoki', 'Dillon Francis', 'Diplo', 'Kygo', 'Zedd', 'Alan Walker', 
+            'Hardwell', 'Afrojack', 'Nicky Romero', 'Marshmello', 'Oliver Heldens', 'Don Diablo', 'Above & Beyond', 'Paul van Dyk', 'Dash Berlin', 
+            'Alesso', 'Axwell', 'Sebastian Ingrosso', 'Knife Party', 'Madeon', 'Porter Robinson', 'Krewella', 'Benny Benassi', 'Borgore', 
+            'Flume', 'Illenium', 'RL Grime', 'Dada Life', 'Duke Dumont', 'Fedde Le Grand', 'Gareth Emery', 'Galantis', 'Lost Frequencies', 
+            'Robin Schulz', 'Sam Feldt', 'Thomas Gold', 'Yellow Claw', 'W&W', 'Tritonal', 'Sander van Doorn', 'Kaskade', 'Laidback Luke'
+        ],
+        'sertanejo': [
+            'sertanejo', 'sertanejo universitario', 'sertanejo pop', 'modao', 'Jorge & Mateus', 'Henrique & Juliano', 'Gusttavo Lima', 'Marília Mendonça', 
+            'Maiara & Maraisa', 'Zé Neto & Cristiano', 'Wesley Safadão', 'Gustavo Mioto', 'Luan Santana', 'Michel Teló', 'César Menotti & Fabiano', 
+            'Simone & Simaria', 'Fernando & Sorocaba', 'Chrystian & Ralf', 'Leandro & Leonardo', 'Chitãozinho & Xororó', 'Zezé Di Camargo & Luciano', 
+            'João Paulo & Daniel', 'Bruno & Marrone', 'Victor & Leo', 'Matheus & Kauan', 'Munhoz & Mariano', 'João Bosco & Vinícius', 'Jads & Jadson', 
+            'Hugo & Tiago', 'Humberto & Ronaldo', 'Edson & Hudson', 'Rick & Renner', 'Teodoro & Sampaio', 'Milionário & José Rico', 'Tonico & Tinoco', 
+            'Pena Branca & Xavantinho', 'Inezita Barroso', 'Almir Sater', 'Sérgio Reis', 'Renato Teixeira', 'Roberta Miranda', 'Léo Canhoto & Robertinho', 
+            'Dino Franco & Mouraí', 'Zilo & Zalo', 'Cascatinha & Inhana', 'Lourenço & Lourival', 'Pedro Bento & Zé da Estrada', 'Duduca & Dalvan', 
+            'João Mineiro & Marciano', 'As Galvão', 'Irineu & Irineia', 'Tião Carreiro & Pardinho'
+        ],
+        'latina': [
+            'latina', 'reggaeton', 'salsa', 'bachata', 'merengue', 'cumbia', 'Shakira', 'Daddy Yankee', 'Marc Anthony', 'Romeo Santos', 'Juanes', 
+            'Enrique Iglesias', 'Maluma', 'J Balvin', 'Don Omar', 'Wisin & Yandel', 'Ricky Martin', 'Luis Fonsi', 'Ozuna', 'Bad Bunny', 'Karol G', 
+            'Nicky Jam', 'Prince Royce', 'Celia Cruz', 'Héctor Lavoe', 'Rubén Blades', 'Tito Puente', 'Carlos Vives', 'Gloria Estefan', 'Jennifer Lopez', 
+            'Pitbull', 'Anuel AA', 'Camila Cabello', 'Marcela Morelo', 'Pablo Alborán', 'David Bisbal', 'Fonseca', 'Jesse & Joy', 'Mana', 'Reik', 
+            'CNCO', 'Gente de Zona', 'Nacho', 'Elvis Crespo', 'La India', 'Gilberto Santa Rosa', 'Victor Manuelle', 'Grupo Niche', 'Orquesta Guayacán', 
+            'Joe Arroyo', 'Fruko y sus Tesos', 'La Sonora Ponceña', 'La Fania All-Stars', 'Aventura', 'Andy Montañez', 'Eddy Herrera', 'Johnny Ventura'
+        ],
+        'classica': [
+            'clássica', 'classical', 'orchestra', 'symphony', 'piano', 'violin', 'Ludwig van Beethoven', 'Wolfgang Amadeus Mozart', 'Johann Sebastian Bach', 
+            'Frederic Chopin', 'Antonio Vivaldi', 'Franz Schubert', 'Pyotr Ilyich Tchaikovsky', 'Igor Stravinsky', 'Gustav Mahler', 'Johannes Brahms', 
+            'Richard Wagner', 'Franz Liszt', 'Joseph Haydn', 'Georg Friedrich Händel', 'Dmitri Shostakovich', 'Sergei Rachmaninoff', 'Sergei Prokofiev', 
+            'Maurice Ravel', 'Claude Debussy', 'Felix Mendelssohn', 'Hector Berlioz', 'Edvard Grieg', 'Jean Sibelius', 'Antonín Dvořák', 'Ralph Vaughan Williams', 
+            'Aaron Copland', 'Charles Ives', 'Samuel Barber', 'John Cage', 'Philip Glass', 'Steve Reich', 'Arvo Pärt', 'Krzysztof Penderecki', 'Leonard Bernstein', 
+            'Giacomo Puccini', 'Gioachino Rossini', 'Gaetano Donizetti', 'Vincenzo Bellini', 'Jules Massenet', 'Camille Saint-Saëns', 'César Franck', 
+            'Paul Dukas', 'Gabriel Fauré', 'Nikolai Rimsky-Korsakov', 'Mily Balakirev', 'Modest Mussorgsky', 'Alexander Borodin', 'Isaac Albéniz', 
+            'Manuel de Falla', 'Joaquín Rodrigo', 'Erik Satie', 'Ottorino Respighi', 'Luciano Berio', 'Luigi Nono', 'Darius Milhaud', 'Francis Poulenc', 
+            'Olivier Messiaen', 'György Ligeti', 'Béla Bartók', 'Zoltán Kodály'
+        ],
+        'pagode': [
+            'pagode', 'samba de raiz', 'pagode romântico', 'partido alto', 'pagodinho', 'Zeca Pagodinho', 'Grupo Revelação', 'Fundo de Quintal', 'Thiaguinho', 
+            'Sorriso Maroto', 'Exaltasamba', 'Péricles', 'Samba Pra Gente', 'Arlindo Cruz', 'Raça Negra', 'Só Pra Contrariar', 'Belo', 'Turma do Pagode', 
+            'Pixote', 'Katinguelê', 'Negritude Junior', 'Molejo', 'Jorge Aragão', 'Beth Carvalho', 'Dudu Nobre', 'Alcione', 'Martinho da Vila', 
+            'Dudu Nobre', 'Grupo Raça', 'Pique Novo', 'Grupo Bom Gosto', 'Reinaldo', 'Grupo Sensação', 'Katinguelê', 'Os Travessos', 'Netinho de Paula', 
+            'Salgadinho', 'Sensação', 'Art Popular', 'Kiloucura', 'Almir Guineto', 'Adryana Ribeiro', 'Luiz Carlos', 'Xande de Pilares', 'Ferrugem', 
+            'Marquinhos Sensação', 'Renatinho da Bahia', 'Grupo Nosso Sentimento', 'Grupo Tá na Mente', 'Grupo Clareou', 'Grupo Balacobaco', 
+            'Grupo Disfarce', 'Grupo Kiloucura', 'Reinaldo', 'Grupo Nuwance', 'Grupo Pirraça', 'Grupo Vou Pro Sereno', 'Grupo Bom Gosto', 'Grupo Bokaloka'
+        ]
     }
+
 
     # Converte o título para minúsculas para uma comparação case-insensitive
     titulo_lower = titulo.lower()
 
     # Verifica se algum padrão está presente no título
-    for genero, padroes in generos.items():
-        for padrao in padroes:
-            if padrao in titulo_lower:
+    for genero, palavras_chave in generos.items():
+        for palavra_chave in palavras_chave:
+            if re.search(r'\b' + remover_caracteres_especiais(palavra_chave) + r'\b', remover_caracteres_especiais(titulo_lower)):
                 return genero
 
     return 'desconhecido'  # Caso não encontre correspondência
 
 
+def purificar_string(string, artista=''):
+    # Remover caracteres especiais e converter para minúsculas
+    string = re.sub(r'[^\w\s]', '', string).lower()
+    
+    palavras_para_remover = ['oficial', 'live', 'ao vivo', 'ft', 'part', 'clipe', 'hd', 'audio', f'{artista}'.lower(), 'stevie', 'wonder', 'songs', 'mix', 'mixtape', 'mixes', 'video', 'official', 'music', 'dvd', 'cd', '4k', 'lyrics', 'lyric', 'balvin', 'jbalvin']
+    for palavra in palavras_para_remover:
+        string = string.replace(palavra, '')
+    # Remover espaços extras
+    string = re.sub(r'\s+', ' ', string).strip()
+    return string
+
+
+def obter_letra_da_musica(titulo_da_musica, artista):
+    artista_purificado = str(purificar_string(artista)).replace(' ', '')
+    titulo_da_musica_purificado = str(purificar_string(titulo_da_musica, artista_purificado)).replace(' ', '').replace(artista.lower(), '')
+
+    url = f"https://api.lyrics.ovh/v1/{artista_purificado}/{titulo_da_musica_purificado}"
+    response = requests.get(url)
+    if response.status_code == 200:
+        data = response.json()
+        if 'lyrics' in data:
+            return data['lyrics']
+    return "Letra não encontrada"
+    
+
 def obter_detalhes(song):
     song_query = song.get("webpage_url", "")
     duration_in_minutes = song.get('duration', 0) // 60
+    canal = song.get('uploader', '')
 
     if duration_in_minutes <= 10 and 'thumbnail' in song and song_query and duration_in_minutes >= 2:
         genero = identificar_genero(remover_caracteres_especiais(song.get('title', '')))
-        print(genero)
+        titulo = remover_caracteres_especiais(song.get('title', ''), 1)
+        letra = obter_letra_da_musica(titulo, canal)
+
         song_detail = {
-            'id': extrair_id_do_video(song_query),
-            'nome': remover_caracteres_especiais(song.get('title', ''), 1),
+            'id': song.get('id', ''),
+            'nome': titulo,
             'url': song_query,
             'imagem': song.get('thumbnail', ''),
             'tempo': song.get('duration', 0),
-            'views': 0,
-            'like': 0,
-            'genero': genero
+            'views': song.get('view_count', 0),
+            'like': song.get('like_count', 0),
+            'genero': genero,
+            'letra': letra
         }
 
         return song_detail
@@ -251,44 +364,56 @@ def obter_detalhes(song):
         return None
 
 
+def normalize_audio(input_filepath):
+    # Carrega o áudio usando pydub
+    audio = AudioSegment.from_file(input_filepath)
+
+    # Normaliza o volume para -1.5 dBFS
+    change_in_dBFS = -1.5 - audio.max_dBFS
+    normalized_audio = audio.apply_gain(change_in_dBFS)
+
+    # Exporta o áudio normalizado em MP3
+    normalized_audio.export(input_filepath, format='mp3')
+
+    
 def extract_audio_youtube_video(youtube_url, output_filename):
     try:
-        output_filename = f'static/Audios/{output_filename}.mp4'
+        output_dir = 'static/Audios'
+        os.makedirs(output_dir, exist_ok=True)
+        output_filepath = os.path.join(output_dir, f'{output_filename}.mp3')
 
-        if os.path.isfile(output_filename):
+        if os.path.isfile(output_filepath):
+            # Se o arquivo existir, retorne o caminho diretamente
+            return output_filepath
 
-            # Se o arquivo existir, retorne o URL diretamente
-            return output_filename
+        # Opções para yt-dlp
+        ydl_opts = {
+            'format': 'bestaudio/best',
+            'outtmpl': os.path.join(output_dir, f'{output_filename}.%(ext)s'),
+            'postprocessors': [{
+                'key': 'FFmpegExtractAudio',
+                'preferredcodec': 'mp3',
+                'preferredquality': '192',
+            }],
+        }
 
-        # Tentar inicializar o objeto YouTube
-        try:
-            yt = YouTube(youtube_url)
-        except Exception as e:
-            print("Erro ao inicializar o objeto YouTube:", e)
-            return None
+        with yt_dlp.YoutubeDL(ydl_opts) as ydl:
+            ydl.download([youtube_url])
 
-        # Verificar se o vídeo está disponível
-        if not yt.streams.filter(only_audio=True).first():
-            raise ValueError(f'O vídeo em {youtube_url} não está disponível ou não contém áudio')
+        # Normaliza o áudio extraído
+        normalize_audio(output_filepath)
 
-        video = yt.streams.filter(only_audio=True).first()
-        video.download(filename=output_filename)
+        return output_filepath
 
-        # Aguardar até que o download seja concluído
-        while not os.path.exists(output_filename):
-            time.sleep(1)
-
-        return output_filename
-
-    except ValueError as ve:
-        print("Erro ao extrair áudio do vídeo:", ve)
+    except yt_dlp.utils.DownloadError as e:
+        print("Erro ao extrair áudio do vídeo:", e)
         return None
 
     except Exception as e:
         print("Erro ao extrair áudio do vídeo:", e)
         return None
 
-
+        
 
 @app.route('/extract_audio', methods=['POST'])
 def extract_audio():
@@ -302,21 +427,25 @@ def extract_audio():
 
         output_filename = data.get('output_filename', f"{nome.replace(' ', '')}")
 
-        # Caso contrário, extraia o áudio do vídeo do YouTube
+        # Extraia o áudio do vídeo do YouTube
         audio_filepath = extract_audio_youtube_video(youtube_url, output_filename)
-
 
         # Verifique se a extração foi bem-sucedida e retorne o caminho do arquivo de áudio
         if audio_filepath:
-            audio_filepath = f'https://a503d1d5-3be1-4323-ab14-eed957710dca-00-3rn8haxlu4pvq.worf.replit.dev:5000/{audio_filepath}'
-            return jsonify(audio_url=audio_filepath)
+            audio_url = f'https://a503d1d5-3be1-4323-ab14-eed957710dca-00-3rn8haxlu4pvq.worf.replit.dev:5000/{audio_filepath}'
+            return jsonify(audio_url=audio_url)
         else:
-            return jsonify(error="")
+            return jsonify(error="Erro ao extrair o áudio do vídeo.")
 
     except Exception as e:
         app.logger.error(f'Error extracting audio: {str(e)}')
-        return jsonify(error=""), 500
+        return jsonify(error="Erro interno no servidor."), 500
 
+
+
+def search_async(query):
+    song_details = buscar_musicas(remover_caracteres_especiais(query))
+    return song_details
 
 
 @app.route('/search', methods=['POST'])
@@ -329,7 +458,10 @@ def search():
             return jsonify({}), 400
 
         query = data['query']
-        song_details = buscar_musicas(remover_caracteres_especiais(query))
+
+        with ThreadPoolExecutor() as executor:
+            future = executor.submit(search_async, query)
+            song_details = future.result()
 
         return jsonify(song_details)
 
@@ -371,34 +503,39 @@ def update_view():
 
 
 
-@app.route('/top-songs', methods=['GET'])
-def top_songs():
+def top_songs_async():
     try:
         conn = sqlite3.connect(DB_FILE, timeout=10)
         c = conn.cursor()
 
         # Seleciona os 10 registros com mais visualizações
-        c.execute("SELECT id, nome, url, imagem, tempo, view, like FROM songs ORDER BY view DESC LIMIT 10")
+        c.execute("SELECT id, nome, url, imagem, tempo, view, like, genero, letra FROM songs ORDER BY view DESC LIMIT 10")
         rows = c.fetchall()
 
         # Formata os registros no mesmo formato dos resultados da pesquisa do YouTube
-        top_songs = []
-        for row in rows:
-            top_songs.append({
-                'id': row[0],
-                'nome': row[1],
-                'url': row[2],
-                'imagem': row[3],
-                'tempo': row[4],
-                'views': row[5],
-                'like': row[6]
-            })
+        top_songs = [
+            {'id': row[0], 'nome': row[1], 'url': row[2], 'imagem': row[3], 'tempo': row[4], 'views': row[5], 'like': row[6], 'genero': row[7], 'letra': row[8]}
+            for row in rows if row[5] > 0
+        ]
+        return top_songs
+        
+    except error:
+        return []
+    
 
-        conn.close()
+
+@app.route('/top-songs', methods=['GET'])
+def top_songs():
+    try:
+        with ThreadPoolExecutor() as executor:
+            future = executor.submit(top_songs_async)
+            top_songs = future.result()
+
         return jsonify(top_songs), 200
+
     except Exception as e:
         print(f"Error: {str(e)}")
-        return jsonify({'message': 'Internal server error', 'error': str(e)}), 500
+        return jsonify({}), 500
 
 
 
@@ -406,11 +543,6 @@ def top_songs():
 def home():
     return "Server está Online: OneSong Server!"
 
-
-@app.route('/ping')
-def ping():
-    print("Acesso ao /ping")
-    return "pong", 200
 
 
 if __name__ == '__main__':
