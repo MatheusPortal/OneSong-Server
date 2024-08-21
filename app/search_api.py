@@ -89,39 +89,36 @@ def buscar_musicas(song_query):
         return []
 
 
-def remover_caracteres_especiais(s, op=0):
-    def remove_emoji(text):
-        return emoji.replace_emoji(text, replace='')
-        
-    tex = ''
-    
-    s = remove_emoji(s)
+def remover_caracteres_especiais(txt_bruto, opc=0):
+    txt_limpo = ''
 
-    # Remove acentos
-    s = ''.join(c for c in unicodedata.normalize('NFD', s) if unicodedata.category(c) != 'Mn')
-
-    # Remove caracteres especiais e converte para minúsculas
-    s = re.sub(r'[^\w\s]', '', s).lower()
+    txt_bruto = emoji.replace_emoji(txt_bruto, replace='')
 
     # guarda no banco
-    if op != 0:
+    if opc != 0:
+        # Remove caracteres especiais e converte para minúsculas
+        txt_bruto = re.sub(r'[^\w\s]', '', txt_bruto).lower()
+        
         # Remove palavras indesejadas
         for palavra in palavras_para_remover:
-            s = s.replace(palavra, '')
+            txt_bruto = txt_bruto.replace(palavra, '')
 
         # Divide o texto em palavras e capitaliza cada palavra
-        tex = ' '.join([palavra.capitalize() for palavra in s.split()])
+        txt_limpo = ' '.join([palavra.capitalize() for palavra in txt_bruto.split()])
 
     # comparar musica
     else:
         # Define a expressão regular para encontrar caracteres especiais
         padrao = r'[^a-zA-Z0-9\s]'
 
-        # Substitui os caracteres especiais por uma string vazia
-        tex = re.sub(padrao, '', s)
-        tex = f'{tex}'.lower()
+        # Remove acentos
+        txt_bruto = ''.join(c for c in unicodedata.normalize('NFD', txt_bruto) if unicodedata.category(c) != 'Mn')
 
-    return tex
+        # Substitui os caracteres especiais por uma string vazia
+        txt_limpo = re.sub(padrao, '', txt_bruto)
+        txt_limpo = f'{txt_limpo}'.lower()
+
+    return txt_limpo
 
 
 def identificar_genero(titulo):
