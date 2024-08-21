@@ -5,7 +5,6 @@ Uma API que permite a busca, extração e exibição de músicas, letras e áudi
 
 Instalação
 Requisitos:
-
 Python 3.10+
 SQLite
 Flask 2.3.2+
