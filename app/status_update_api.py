@@ -1,4 +1,10 @@
-from main import *
+from app.dependencias import *
+from app.banco_ms import init_db, DB_FILE
+
+
+update_view_bp = Blueprint('update-view', __name__)
+top_songs_bp = Blueprint('top-songs', __name__)
+
 
 def top_songs_async():
     try:
@@ -20,13 +26,9 @@ def top_songs_async():
         return []
     
 
-
-
-@app.route('/update-view', methods=['POST'])
+@update_view_bp.route('/update-view', methods=['POST'])
 def update_view():
     try:
-        init_db()
-
         data = request.get_json()
         result_id = data['id']
 
@@ -52,9 +54,8 @@ def update_view():
         print(f"Error: {str(e)}")
         return jsonify({'message': 'Internal server error', 'error': str(e)}), 500
     
-    
 
-@app.route('/top-songs', methods=['GET'])
+@top_songs_bp.route('/top-songs', methods=['GET'])
 def top_songs():
     try:
         with ThreadPoolExecutor() as executor:

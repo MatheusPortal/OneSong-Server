@@ -1,65 +1,38 @@
-from flask import Flask, request, jsonify
-import yt_dlp
-from difflib import SequenceMatcher
-from pytube import YouTube
-from moviepy.editor import *
 
-from flask import request, jsonify
-from datetime import datetime, timedelta
-from unidecode import unidecode
-import sqlite3
-from youtube_dl import YoutubeDL
-import json
-import re
-import speech_recognition as sr
+from app.dependencias import *
+from app.search_api import search_bp
+from app.audio_api import extract_audio_bp
+from app.status_update_api import update_view_bp, top_songs_bp
+from app.banco_ms import init_db
 
-from cryptography.fernet import Fernet
-import os
-import unicodedata
-from flask_cors import CORS
-import emoji
-
-import requests
-from bs4 import BeautifulSoup
-from concurrent.futures import ThreadPoolExecutor
-from pydub import AudioSegment
 
 
 app = Flask(__name__)
-CORS(app, origins='*')
+CORS(app)
 
 app.static_folder = 'static'
+app.register_blueprint(search_bp)
+app.register_blueprint(update_view_bp)
+app.register_blueprint(extract_audio_bp)
+app.register_blueprint(top_songs_bp)
 
-DB_FILE = "static/song_cache.db"
 
-
-def init_db():
-    try:
-        conn = sqlite3.connect(DB_FILE, timeout=10)
-        c = conn.cursor()
-        c.execute('''
-            CREATE TABLE IF NOT EXISTS songs (
-                id TEXT PRIMARY KEY,
-                nome TEXT,
-                url TEXT,
-                imagem TEXT,
-                tempo INTEGER,
-                view INTEGER DEFAULT 0,
-                like INTEGER DEFAULT 0,
-                genero TEXT,
-                letra TEXT
-            )
-        ''')
-        conn.commit()
-        conn.close()
-    except sqlite3.Error as e:
-        print("Erro ao inicializar o banco de dados:", e)   
+@app.after_request
+def after_request(response):
+    response.headers.add('Access-Control-Allow-Origin', '*')
+    response.headers.add('Access-Control-Allow-Headers', 'Content-Type,Authorization')
+    response.headers.add('Access-Control-Allow-Methods', 'GET,PUT,POST,DELETE,OPTIONS')
+    return response
 
 
 @app.route('/')
 def home():
-    return "Server está Online: OneSong Server!"
-
+    try:
+        init_db(1)
+        return "Server está Online: OneSong Server!"
+        
+    except Exception as e:
+        return f"vServer está Offiline: {str(e)}"
 
 
 if __name__ == '__main__':

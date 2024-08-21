@@ -1,8 +1,23 @@
 
-from main import *
+from app.dependencias import *
+from app.banco_ms import url_serve, init_db, DB_FILE
 
-palavras_para_remover = ['oficial', 'live', 'ao vivo', 'clipe', 'hd', 'audio' 'stevie', 'wonder', 'songs', 'mix', 'mixtape', 'mixes', 'lyric', 'video', 'official', 'music', 'dvd', 'cd', '4k', 'lyrics', 'balvin', 'jbalvin', 'audío']
+palavras_para_remover = ['oficial', 'live', 'ao vivo', 'clipe', 'hd', 'audio', 'songs', 'mix', 'mixtape', 'mixes', 'lyric', 'video', 'official', 'music', 'dvd', 'cd', '4k', 'lyrics', 'audío']
 
+search_bp = Blueprint('search', __name__)
+
+ydl_opts_info = {
+            'quiet': True,
+            'skip_download': True,
+            'age_limit': 18,
+            'format': 'best',
+            'noplaylist': True,
+            'extractor_args': {
+                'youtube': {
+                    'skip': ['dash'],
+                }
+            }
+        }
 
 
 def buscar_musicas(song_query):
@@ -10,26 +25,9 @@ def buscar_musicas(song_query):
         conn = sqlite3.connect(DB_FILE, timeout=10)
         c = conn.cursor()
 
-        # Criar a tabela se não existir
-        c.execute('''
-            CREATE TABLE IF NOT EXISTS songs (
-                id TEXT PRIMARY KEY,
-                nome TEXT,
-                url TEXT,
-                imagem TEXT,
-                tempo INTEGER,
-                view INTEGER DEFAULT 0,
-                like INTEGER DEFAULT 0,
-                genero TEXT,
-                letra TEXT
-            )
-        ''')
-        conn.commit()
-
         # Buscar músicas semelhantes no banco de dados
         c.execute("SELECT * FROM songs")
         similar_results = list()
-
         rows = c.fetchall()
 
         for item in rows:
@@ -39,7 +37,6 @@ def buscar_musicas(song_query):
 
         # Se houver resultados semelhantes no banco de dados, retorná-los
         if similar_results:
-            print("Retornando resultados semelhantes do cache.")
             results_banco = list()
             for dados in similar_results:
                 tabela = {
@@ -55,33 +52,21 @@ def buscar_musicas(song_query):
                 }
                 results_banco.append(tabela)
 
+            conn.commit()
+            conn.close()
             return results_banco
 
         # Se não houver resultados semelhantes no banco de dados, buscar no YouTube
-        ydl_opts_info = {
-            'quiet': True,
-            'skip_download': True,
-            'age_limit': 18,
-            'format': 'best',
-            'noplaylist': True,
-            'extractor_args': {
-                'youtube': {
-                    'skip': ['dash'],
-                }
-            }
-        }
-
-
         with yt_dlp.YoutubeDL(ydl_opts_info) as ydl:
             try:
-                info_dict = ydl.extract_info(f"ytsearch5:Music {song_query}", download=False)
+                info_dict = ydl.extract_info(f"ytsearch5:{song_query}", download=False)
                 song_options = info_dict.get("entries", [])
             except Exception as e:
-                print(f"Erro ao consultar o YouTube com yt_dlp: {e}")
                 song_options = []
 
         # Extrair os detalhes das músicas
         song_details = []
+
         for song in song_options:
             detail = obter_detalhes(song)
             if detail:
@@ -101,7 +86,6 @@ def buscar_musicas(song_query):
         return song_details
 
     except sqlite3.Error as e:
-        print("Erro de SQLite:", e)
         return []
 
 
@@ -118,7 +102,6 @@ def remover_caracteres_especiais(s, op=0):
 
     # Remove caracteres especiais e converte para minúsculas
     s = re.sub(r'[^\w\s]', '', s).lower()
-
 
     # guarda no banco
     if op != 0:
@@ -242,30 +225,6 @@ def identificar_genero(titulo):
 
     return 'desconhecido'  # Caso não encontre correspondência
 
-
-def purificar_string(string, artista=''):
-    # Remover caracteres especiais e converter para minúsculas
-    string = re.sub(r'[^\w\s]', '', string).lower()
-    
-    palavras_para_remover = ['oficial', 'live', 'ao vivo', 'ft', 'part', 'clipe', 'hd', 'audio', f'{artista}'.lower(), 'stevie', 'wonder', 'songs', 'mix', 'mixtape', 'mixes', 'video', 'official', 'music', 'dvd', 'cd', '4k', 'lyrics', 'lyric', 'balvin', 'jbalvin']
-    for palavra in palavras_para_remover:
-        string = string.replace(palavra, '')
-    # Remover espaços extras
-    string = re.sub(r'\s+', ' ', string).strip()
-    return string
-
-
-def obter_letra_da_musica(titulo_da_musica, artista):
-    artista_purificado = str(purificar_string(artista)).replace(' ', '')
-    titulo_da_musica_purificado = str(purificar_string(titulo_da_musica, artista_purificado)).replace(' ', '').replace(artista.lower(), '')
-
-    url = f"https://api.lyrics.ovh/v1/{artista_purificado}/{titulo_da_musica_purificado}"
-    response = requests.get(url)
-    if response.status_code == 200:
-        data = response.json()
-        if 'lyrics' in data:
-            return data['lyrics']
-    return "Letra não encontrada"
  
 
 def obter_detalhes(song):
@@ -276,7 +235,7 @@ def obter_detalhes(song):
     if duration_in_minutes <= 10 and 'thumbnail' in song and song_query and duration_in_minutes >= 2:
         genero = identificar_genero(remover_caracteres_especiais(song.get('title', '')))
         titulo = remover_caracteres_especiais(song.get('title', ''), 1)
-        letra = obter_letra_da_musica(titulo, canal)
+        letra = 'Letra desconhecida'
 
         song_detail = {
             'id': song.get('id', ''),
@@ -292,30 +251,23 @@ def obter_detalhes(song):
 
         return song_detail
     else:
-        print(f'Ignorando vídeo: {song_query}')
         return None
 
 
-def search_async(query):
-    song_details = buscar_musicas(remover_caracteres_especiais(query))
-    return song_details
 
 
-
-
-@app.route('/search', methods=['POST'])
+@search_bp.route('/search', methods=['POST'])
 def search():
     try:
         data = request.get_json()
+        query = data['query']
 
         # Verificar se os dados de entrada são válidos
         if data is None or 'query' not in data or not isinstance(data['query'], str) or not data['query'].strip():
             return jsonify({}), 400
 
-        query = data['query']
-
         with ThreadPoolExecutor() as executor:
-            future = executor.submit(search_async, query)
+            future = executor.submit(buscar_musicas, query)
             song_details = future.result()
 
         return jsonify(song_details)
