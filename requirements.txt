@@ -1,0 +1,3 @@
+Flask==2.2.2  # Ou a versão que você está usando
+spotipy==2.24.0  # Adicione outras dependências conforme necessário
+youtube-dl==<versão>  # Adicione a versão do youtube-dl que você está usando
