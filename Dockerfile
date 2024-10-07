@@ -4,6 +4,10 @@ FROM python:3.12-slim
 # Defina o diretório de trabalho
 WORKDIR /app
 
+# Instala o FFmpeg
+RUN apt-get update && apt-get install -y ffmpeg && apt-get clean
+
+
 # Copie o arquivo requirements.txt para o diretório de trabalho
 COPY requirements.txt .
 
