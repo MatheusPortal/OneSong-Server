@@ -134,10 +134,9 @@ def audio():
         with youtube_dl.YoutubeDL(ytdl_opts) as ydl:
             search_url = f"ytsearch:{query}"
             info_dict = ydl.extract_info(search_url, download=True)
-            video = info_dict['entries'][0]
 
         # Construindo a URL do servidor para retornar
-        server_url = request.host_url
+        server_url = request.host_url.replace("http://", "https://")
         audio_url = f"{server_url}{music_folder}/{music_id}.mp3"
 
         return jsonify({'url': audio_url})
