@@ -1,17 +1,66 @@
 from flask import Flask, jsonify, request, send_from_directory
-
 import yt_dlp as youtube_dl
-
 import requests
 import os
 from spotipy import Spotify
 from spotipy.oauth2 import SpotifyClientCredentials
-
-
 from flask_cors import CORS
+import subprocess
+import platform
+import shutil
+import zipfile
+import glob
+
 
 app = Flask(__name__)
 CORS(app)  # Isso permite requisições de qualquer origem
+
+
+def install_ffmpeg():
+    try:
+        subprocess.run(["ffmpeg", "-version"], check=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+        print("FFmpeg já está instalado.")
+    except FileNotFoundError:
+        system_platform = platform.system()
+        if system_platform == "Windows":
+            print("FFmpeg não encontrado. Instalando no Windows...")
+            url = "https://www.gyan.dev/ffmpeg/builds/ffmpeg-release-essentials.zip"
+            ffmpeg_zip = "ffmpeg.zip"
+
+            # Baixar o arquivo zip do FFmpeg
+            with requests.get(url, stream=True) as response:
+                response.raise_for_status()
+                with open(ffmpeg_zip, 'wb') as file:
+                    shutil.copyfileobj(response.raw, file)
+
+            # Extrair o arquivo zip
+            with zipfile.ZipFile(ffmpeg_zip, 'r') as zip_ref:
+                zip_ref.extractall("ffmpeg")
+
+            # Encontrar a pasta binária do FFmpeg após a extração
+            extracted_folder = glob.glob("ffmpeg/ffmpeg-*-essentials_build/bin")[0]
+
+            # Mover binários para o diretório de trabalho atual
+            for file in os.listdir(extracted_folder):
+                shutil.move(os.path.join(extracted_folder, file), os.getcwd())
+
+            # Deletar o arquivo zip após a extração
+            os.remove(ffmpeg_zip)
+
+            # Remover a pasta temporária usada para extração
+            shutil.rmtree("ffmpeg")
+
+            print("FFmpeg instalado com sucesso no Windows.")
+        elif system_platform == "Linux":
+            print("FFmpeg não encontrado. Instalando no Linux...")
+            subprocess.run(["apt-get", "update"], check=True)
+            subprocess.run(["apt-get", "install", "-y", "ffmpeg"], check=True)
+            print("FFmpeg instalado com sucesso no Linux.")
+        else:
+            raise Exception("Sistema operacional não suportado para instalação automática do FFmpeg.")
+
+install_ffmpeg()
+
 
 # Configuração do Spotify
 client_id = '01e862af1ef6487493adbe9ddf708b60'
@@ -60,7 +109,6 @@ def search():
         return jsonify({'error': 'Erro interno do servidor'}), 500
 
 
-
 @app.route('/audio', methods=['GET'])
 def audio():
     query = request.args.get('query')
@@ -80,7 +128,6 @@ def audio():
                 'preferredcodec': 'mp3',
                 'preferredquality': '192',
             }],
-            'ffmpeg_location': ffmpeg_location,
             'outtmpl': os.path.join(music_folder, f'{music_id}'),
         }
 
