@@ -13,7 +13,6 @@ from flask_cors import CORS
 app = Flask(__name__)
 CORS(app)  # Isso permite requisições de qualquer origem
 
-ffmpeg_location = "E:/Meus Programas/ffmpeg-2024/bin/ffmpeg.exe"
 # Configuração do Spotify
 client_id = '01e862af1ef6487493adbe9ddf708b60'
 client_secret = '6e8f904f5bf44649907fbaab2bee5819'    
